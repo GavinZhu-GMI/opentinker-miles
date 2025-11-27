@@ -130,12 +130,26 @@ class SGLangClient:
                 # This code works regardless of SGLang format:
                 # - If SGLang returns [None, logprob1, ...] -> use as-is
                 # - If SGLang returns [logprob1, ...] -> prepend None
-                if input_logprobs and input_logprobs[0] is None:
-                    result["prompt_logprobs"] = input_logprobs
+                normalized_logprobs = self._normalize_logprob_entries(input_logprobs)
+
+                if normalized_logprobs and normalized_logprobs[0] is None:
+                    prompt_logprob_values = normalized_logprobs
                     logger.debug(f"SGLang already has None prefix in input_token_logprobs")
                 else:
-                    result["prompt_logprobs"] = [None] + input_logprobs
+                    prompt_logprob_values = [None] + normalized_logprobs
                     logger.debug(f"Prepended None to input_token_logprobs")
+
+                # The normalized list still contains tuples (value, token_id, text). Extract only the logprob.
+                flattened_prompt_logprobs = []
+                for entry in prompt_logprob_values:
+                    if entry is None:
+                        flattened_prompt_logprobs.append(None)
+                    elif isinstance(entry, (list, tuple)):
+                        flattened_prompt_logprobs.append(entry[0])
+                    else:
+                        flattened_prompt_logprobs.append(entry)
+
+                result["prompt_logprobs"] = flattened_prompt_logprobs
 
             logger.debug(f"Generated {len(output_tokens)} tokens from SGLang")
             return result
@@ -144,6 +158,31 @@ class SGLangClient:
             logger.error(f"Failed to parse SGLang response: {e}")
             logger.error(f"SGLang response: {sglang_output}")
             raise ValueError(f"Invalid SGLang response format: {e}")
+
+    @staticmethod
+    def _normalize_logprob_entries(entries: List[Any]) -> List[Optional[float]]:
+        """Convert SGLang token logprob records into a flat list of floats/None.
+
+        Historically SGLang has emitted formats such as:
+        - [None, (-0.1, 123, \"a\"), ...]
+        - [(-0.2, 456), ...]
+        We only care about the first element (the logprob) and preserve None sentinels.
+        """
+        normalized: List[Optional[float]] = []
+        for entry in entries or []:
+            if entry is None:
+                normalized.append(None)
+            elif isinstance(entry, (list, tuple)) and entry:
+                try:
+                    normalized.append(float(entry[0]))
+                except (TypeError, ValueError):
+                    normalized.append(None)
+            else:
+                try:
+                    normalized.append(float(entry))
+                except (TypeError, ValueError):
+                    normalized.append(None)
+        return normalized
 
     async def batch_generate(
         self,
